@@ -9,6 +9,7 @@ import {
   unassignDeviceFromUser
 } from './api';
 import toast from 'react-hot-toast';
+import OTAUpdateModal from './OTAUpdateModal';
 import './DeviceManagementPage.css';
 
 function DeviceManagementPage({ onBack }) {
@@ -18,6 +19,7 @@ function DeviceManagementPage({ onBack }) {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingDevice, setEditingDevice] = useState(null);
   const [showAssignForm, setShowAssignForm] = useState(null);
+  const [otaDevice, setOtaDevice] = useState(null);
 
   const [formData, setFormData] = useState(defaultForm());
 
@@ -299,6 +301,13 @@ function DeviceManagementPage({ onBack }) {
 
             <div className="dm-device-actions">
               <button
+                onClick={() => setOtaDevice(device)}
+                className="dm-btn dm-btn-info"
+                title="OTA Firmware Update"
+              >
+                📡 OTA
+              </button>
+              <button
                 onClick={() =>
                   setShowAssignForm(
                     showAssignForm === device.deviceId ? null : device.deviceId
@@ -364,6 +373,13 @@ function DeviceManagementPage({ onBack }) {
         <div className="dm-empty">
           <p>Chưa có device nào. Tạo device đầu tiên!</p>
         </div>
+      )}
+
+      {otaDevice && (
+        <OTAUpdateModal
+          device={otaDevice}
+          onClose={() => setOtaDevice(null)}
+        />
       )}
     </div>
   );

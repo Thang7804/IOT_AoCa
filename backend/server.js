@@ -4,6 +4,9 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const mqtt = require('mqtt');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const User = require('./models/User');
 const Device = require('./models/Device');
@@ -50,28 +53,68 @@ mqttClient.on('connect', () => {
       console.log('Subscribed to agrosense/+/telemetry');
     }
   });
+  mqttClient.subscribe('agrosense/+/ota_progress', (err) => {
+    if (err) {
+      console.error('MQTT subscribe error:', err);
+    } else {
+      console.log('Subscribed to agrosense/+/ota_progress');
+    }
+  });
 });
 
 mqttClient.on('message', async (topic, message) => {
   try {
-    const [, deviceId] = topic.split('/');
+    const parts = topic.split('/');
+    const deviceId = parts[1];
+    const messageType = parts[2] || 'telemetry';
     const payload = JSON.parse(message.toString());
 
-    await Telemetry.create({
-      deviceId,
-      ph: payload.ph,
-      turbidity: payload.turbidity,
-      temperature: payload.temperature,
-      pumpState: payload.pump_state || false
-    });
+    if (messageType === 'telemetry') {
+      await Telemetry.create({
+        deviceId,
+        ph: payload.ph,
+        turbidity: payload.turbidity,
+        temperature: payload.temperature,
+        pumpState: payload.pump_state || false
+      });
 
-    await Device.findOneAndUpdate(
-      { deviceId },
-      { status: 'online', lastSeen: new Date() },
-      { upsert: true, setDefaultsOnInsert: true }
-    );
+      await Device.findOneAndUpdate(
+        { deviceId },
+        { status: 'online', lastSeen: new Date() },
+        { upsert: true, setDefaultsOnInsert: true }
+      );
 
-    console.log(`[${deviceId}] Data saved: pH=${payload.ph}, turb=${payload.turbidity}`);
+      console.log(`[${deviceId}] Data saved: pH=${payload.ph}, turb=${payload.turbidity}`);
+    }
+
+    // Handle OTA progress
+    if (messageType === 'ota_progress') {
+      const device = await Device.findOne({ deviceId });
+      if (device) {
+        device.firmware.updateStatus = payload.status || 'downloading';
+        device.firmware.updateProgress = payload.progress || 0;
+        
+        if (payload.status === 'success') {
+          device.firmware.currentVersion = payload.version;
+          device.firmware.updateHistory.push({
+            version: payload.version,
+            updatedAt: new Date(),
+            success: true
+          });
+        } else if (payload.status === 'failed') {
+          device.firmware.updateError = payload.error || 'Unknown error';
+          device.firmware.updateHistory.push({
+            version: payload.version,
+            updatedAt: new Date(),
+            success: false,
+            error: payload.error
+          });
+        }
+        
+        await device.save();
+        console.log(`[${deviceId}] OTA Progress: ${payload.status} ${payload.progress}%`);
+      }
+    }
   } catch (error) {
     console.error('MQTT message error:', error);
   }
@@ -533,6 +576,470 @@ app.put('/api/v1/users/:userId/role', protect, async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// Admin tạo tài khoản cho user
+app.post('/api/v1/users/create', protect, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới tạo tài khoản được' 
+      });
+    }
+
+    const { email, password, fullName, role, devices } = req.body;
+
+    // Validate
+    if (!email || !password || !fullName) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email, password và fullName là bắt buộc' 
+      });
+    }
+
+    // Check email đã tồn tại
+    const exists = await User.findOne({ email });
+    if (exists) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email đã tồn tại' 
+      });
+    }
+
+    // Tạo user
+    const user = await User.create({
+      email,
+      password,
+      fullName,
+      role: role || 'user',
+      devices: devices || []
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Tạo tài khoản thành công',
+      data: {
+        id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        devices: user.devices
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Xóa user (Admin only)
+app.delete('/api/v1/users/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới xóa user được' 
+      });
+    }
+
+    // Không cho xóa chính mình
+    if (userId === req.user._id.toString()) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Không thể xóa chính mình' 
+      });
+    }
+
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User không tồn tại' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Đã xóa user ${user.email}`
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Cập nhật thông tin user (Admin only)
+app.put('/api/v1/users/:userId', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { fullName, email, role, devices } = req.body;
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới sửa user được' 
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User không tồn tại' 
+      });
+    }
+
+    // Cập nhật
+    if (fullName) user.fullName = fullName;
+    if (email && email !== user.email) {
+      // Kiểm tra email mới có trùng không
+      const emailExists = await User.findOne({ email });
+      if (emailExists) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Email đã tồn tại' 
+        });
+      }
+      user.email = email;
+    }
+    if (role) user.role = role;
+    if (devices) user.devices = devices;
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Cập nhật user thành công',
+      data: {
+        id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        devices: user.devices
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Reset password user (Admin only)
+app.post('/api/v1/users/:userId/reset-password', protect, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { newPassword } = req.body;
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới reset password được' 
+      });
+    }
+
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Password phải ít nhất 6 ký tự' 
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User không tồn tại' 
+      });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Đã reset password cho ${user.email}`
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==================== FILE UPLOAD CONFIG ====================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = './uploads/firmware';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const deviceId = req.params.deviceId || 'unknown';
+    const version = req.body.version || Date.now();
+    const ext = path.extname(file.originalname);
+    cb(null, `firmware_${deviceId}_v${version}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowedExt = ['.bin', '.hex', '.elf'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    
+    if (allowedExt.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Chỉ chấp nhận file .bin, .hex hoặc .elf'));
+    }
+  }
+});
+
+// ==================== OTA ROUTES ====================
+
+// Upload firmware file
+app.post('/api/v1/firmware/upload/:deviceId', protect, upload.single('firmware'), async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { version, description } = req.body;
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới upload firmware được' 
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Không có file được upload' 
+      });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (!device) {
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Device không tồn tại' 
+      });
+    }
+
+    device.firmware.availableVersion = version;
+    device.firmware.lastUpdateCheck = new Date();
+    await device.save();
+
+    res.json({
+      success: true,
+      message: 'Upload firmware thành công',
+      data: {
+        deviceId,
+        version,
+        filename: req.file.filename,
+        size: req.file.size,
+        path: req.file.path
+      }
+    });
+
+  } catch (error) {
+    if (req.file) {
+      fs.unlinkSync(req.file.path);
+    }
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Trigger OTA update
+app.post('/api/v1/firmware/update/:deviceId', protect, async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { version } = req.body;
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới trigger update được' 
+      });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (!device) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Device không tồn tại' 
+      });
+    }
+
+    if (device.status !== 'online') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Device đang offline, không thể update' 
+      });
+    }
+
+    const firmwarePath = `./uploads/firmware/firmware_${deviceId}_v${version}.bin`;
+    if (!fs.existsSync(firmwarePath)) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'File firmware không tồn tại' 
+      });
+    }
+
+    device.firmware.updateStatus = 'pending';
+    device.firmware.updateProgress = 0;
+    device.firmware.updateError = null;
+    await device.save();
+
+    const otaCommand = {
+      cmd_id: `OTA_${Date.now()}`,
+      action: 'OTA_UPDATE',
+      version,
+      url: `http://${req.get('host')}/api/v1/firmware/download/${deviceId}/${version}`,
+      size: fs.statSync(firmwarePath).size
+    };
+
+    mqttClient.publish(
+      `agrosense/${deviceId}/cmd`,
+      JSON.stringify(otaCommand)
+    );
+
+    res.json({
+      success: true,
+      message: 'Đã gửi lệnh OTA update tới device',
+      data: {
+        deviceId,
+        version,
+        status: 'pending'
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Download firmware (cho ESP32)
+app.get('/api/v1/firmware/download/:deviceId/:version', async (req, res) => {
+  try {
+    const { deviceId, version } = req.params;
+
+    const firmwarePath = path.join(__dirname, 'uploads', 'firmware', `firmware_${deviceId}_v${version}.bin`);
+
+    if (!fs.existsSync(firmwarePath)) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'File firmware không tồn tại' 
+      });
+    }
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="firmware_${deviceId}_v${version}.bin"`);
+    res.setHeader('Content-Length', fs.statSync(firmwarePath).size);
+
+    const fileStream = fs.createReadStream(firmwarePath);
+    fileStream.pipe(res);
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Lấy firmware info
+app.get('/api/v1/firmware/:deviceId', protect, async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+
+    if (req.user.role !== 'admin' && !req.user.devices.includes(deviceId)) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Không có quyền truy cập' 
+      });
+    }
+
+    const device = await Device.findOne({ deviceId });
+    if (!device) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Device không tồn tại' 
+      });
+    }
+
+    const firmwareDir = './uploads/firmware';
+    const files = fs.existsSync(firmwareDir) 
+      ? fs.readdirSync(firmwareDir)
+          .filter(f => f.startsWith(`firmware_${deviceId}_`))
+          .map(f => {
+            const stats = fs.statSync(path.join(firmwareDir, f));
+            const versionMatch = f.match(/v([0-9.]+)/);
+            return {
+              filename: f,
+              version: versionMatch ? versionMatch[1] : 'unknown',
+              size: stats.size,
+              uploadedAt: stats.mtime
+            };
+          })
+      : [];
+
+    res.json({
+      success: true,
+      data: {
+        deviceId,
+        currentVersion: device.firmware.currentVersion,
+        availableVersion: device.firmware.availableVersion,
+        updateStatus: device.firmware.updateStatus,
+        updateProgress: device.firmware.updateProgress,
+        updateError: device.firmware.updateError,
+        lastUpdateCheck: device.firmware.lastUpdateCheck,
+        updateHistory: device.firmware.updateHistory || [],
+        availableFiles: files
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Xóa firmware file
+app.delete('/api/v1/firmware/:deviceId/:version', protect, async (req, res) => {
+  try {
+    const { deviceId, version } = req.params;
+
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Chỉ admin mới xóa firmware được' 
+      });
+    }
+
+    const firmwarePath = `./uploads/firmware/firmware_${deviceId}_v${version}.bin`;
+
+    if (!fs.existsSync(firmwarePath)) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'File firmware không tồn tại' 
+      });
+    }
+
+    fs.unlinkSync(firmwarePath);
+
+    res.json({
+      success: true,
+      message: 'Xóa firmware thành công'
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Serve static files
+app.use('/uploads', express.static('uploads'));
 
 // ==================== HEALTH CHECK ====================
 app.get('/health', (req, res) => {

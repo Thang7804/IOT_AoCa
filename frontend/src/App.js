@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import LoginPage from './LoginPage';
 import DashboardPage from './DashboardPage';
 import DeviceManagementPage from './DeviceManagementPage';
+import UserManagementPage from './UserManagementPage';
 import './App.css';
 
 function App() {
@@ -76,11 +77,17 @@ function App() {
             user={user}
             onBack={() => setActiveView('dashboard')}
           />
+        ) : activeView === 'userManagement' ? (
+          <UserManagementPage
+            user={user}
+            onBack={() => setActiveView('dashboard')}
+          />
         ) : (
           <DashboardPage
             user={user}
             onLogout={handleLogout}
             onManageDevices={() => setActiveView('deviceManagement')}
+            onManageUsers={() => setActiveView('userManagement')}
           />
         )
       ) : (

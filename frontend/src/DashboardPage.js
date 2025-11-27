@@ -10,7 +10,7 @@ import {
 import toast from 'react-hot-toast';
 import './DashboardPage.css';
 
-function DashboardPage({ user, onLogout, onManageDevices }) {
+function DashboardPage({ user, onLogout, onManageDevices, onManageUsers }) {
   const [devices, setDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState(null);
   const [latestData, setLatestData] = useState(null);
@@ -134,12 +134,20 @@ function DashboardPage({ user, onLogout, onManageDevices }) {
         </div>
         <div className="dashboard-header-actions">
           {user.role === 'admin' && (
-            <button
-              onClick={onManageDevices}
-              className="dashboard-manage-btn"
-            >
-              🛠️ Quản lý thiết bị
-            </button>
+            <>
+              <button
+                onClick={onManageDevices}
+                className="dashboard-manage-btn"
+              >
+                🛠️ Quản lý thiết bị
+              </button>
+              <button
+                onClick={onManageUsers}
+                className="dashboard-manage-btn"
+              >
+                👥 Quản lý User
+              </button>
+            </>
           )}
           <button onClick={handleLogout} className="dashboard-logout-btn">
             Đăng xuất

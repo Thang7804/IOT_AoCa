@@ -150,10 +150,86 @@ export async function getUsers() {
   return apiCall('/users');
 }
 
+export async function createUser(userData) {
+  return apiCall('/users/create', {
+    method: 'POST',
+    body: userData
+  });
+}
+
+export async function updateUser(userId, userData) {
+  return apiCall(`/users/${userId}`, {
+    method: 'PUT',
+    body: userData
+  });
+}
+
+export async function deleteUser(userId) {
+  return apiCall(`/users/${userId}`, {
+    method: 'DELETE'
+  });
+}
+
 export async function updateUserRole(userId, role) {
   return apiCall(`/users/${userId}/role`, {
     method: 'PUT',
     body: { role }
+  });
+}
+
+export async function resetUserPassword(userId, newPassword) {
+  return apiCall(`/users/${userId}/reset-password`, {
+    method: 'POST',
+    body: { newPassword }
+  });
+}
+
+// ========== FIRMWARE OTA ==========
+
+export async function getFirmwareInfo(deviceId) {
+  const token = localStorage.getItem('token');
+  const response = await fetch(`${API_BASE_URL}/firmware/${deviceId}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || 'Có lỗi xảy ra');
+  }
+  return data;
+}
+
+export async function uploadFirmware(deviceId, file, version) {
+  const token = localStorage.getItem('token');
+  const formData = new FormData();
+  formData.append('firmware', file);
+  formData.append('version', version);
+
+  const response = await fetch(`${API_BASE_URL}/firmware/upload/${deviceId}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`
+    },
+    body: formData
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || 'Có lỗi xảy ra');
+  }
+  return data;
+}
+
+export async function triggerOTAUpdate(deviceId, version) {
+  return apiCall(`/firmware/update/${deviceId}`, {
+    method: 'POST',
+    body: { version }
+  });
+}
+
+export async function deleteFirmware(deviceId, version) {
+  return apiCall(`/firmware/${deviceId}/${version}`, {
+    method: 'DELETE'
   });
 }
 
