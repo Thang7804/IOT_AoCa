@@ -1,0 +1,12 @@
+.app-loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background: #f5f7fa;
+  }
+  
+  .app-loading h2 {
+    color: #666;
+    font-weight: 500;
+  }
